@@ -162,7 +162,7 @@ export default function Sidebar({
       <div className="sidebar-footer">
         <div className="footer-status">
           <span className="status-dot"></span>
-          <span>Engine: Groq LLaMA 3.3 70B</span>
+          <span>Engine: Groq</span>
         </div>
       </div>
     </aside>

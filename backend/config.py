@@ -18,6 +18,7 @@ class Config:
     UPLOAD_FOLDER = os.path.abspath(os.path.join(os.path.dirname(__file__), "uploads"))
     CHROMA_DB_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "chroma_db"))
     GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-    GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+    GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-20b")
     EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
     ALLOWED_EXTENSIONS = {"pdf", "txt", "md"}
+    MAX_CONTENT_LENGTH = 25 * 1024 * 1024

@@ -22,6 +22,9 @@ class DocumentProcessor:
             raise ValueError(f"Unsupported file format: {ext}")
 
         chunks = self.text_splitter.split_documents(pages)
+        chunks = [chunk for chunk in chunks if chunk.page_content.strip()]
+        if not chunks:
+            raise ValueError("Document contains no extractable text. Scanned PDFs require OCR.")
         
         processed_chunks = []
         for i, chunk in enumerate(chunks):

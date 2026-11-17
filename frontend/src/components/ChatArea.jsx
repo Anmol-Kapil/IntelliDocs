@@ -84,6 +84,7 @@ export default function ChatArea({
             className="btn-secondary danger-hover"
             onClick={() => onResetChat(selectedDoc)}
             title="Clear conversation history"
+            disabled={loading}
           >
             <Trash size={16} />
             <span>Clear History</span>

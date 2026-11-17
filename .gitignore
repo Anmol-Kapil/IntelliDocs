@@ -12,6 +12,7 @@ ENV/
 # Vector DB & Upload Storage
 backend/chroma_db/
 backend/uploads/
+backend/.cache/
 chroma_db/
 uploads/
 *.pdf

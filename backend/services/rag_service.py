@@ -1,9 +1,27 @@
 import os
+import ssl
+import truststore
 from datetime import datetime
 import chromadb
 from sentence_transformers import SentenceTransformer
-from groq import Groq
+from groq import Groq, DefaultHttpxClient, APIConnectionError, AuthenticationError, RateLimitError, NotFoundError, PermissionDeniedError
+from werkzeug.exceptions import ServiceUnavailable, BadGateway
 from backend.config import Config
+
+def groq_failure(error):
+    if isinstance(error, APIConnectionError):
+        message = "Cannot securely connect to Groq. Check your network, proxy, and trusted certificates."
+    elif isinstance(error, AuthenticationError):
+        message = "Groq rejected the API key. Update GROQ_API_KEY in backend/.env and restart the backend."
+    elif isinstance(error, NotFoundError):
+        message = "The configured Groq model is unavailable. Update GROQ_MODEL in backend/.env and restart the backend."
+    elif isinstance(error, PermissionDeniedError):
+        message = "Your Groq account does not have permission to use this model. Check your Groq project settings."
+    elif isinstance(error, RateLimitError):
+        message = "Groq rate or usage limit reached. Wait and retry, or check your Groq account limits."
+    else:
+        message = "Groq could not generate a response. Try again or check the service status."
+    return BadGateway(message)
 
 class RAGManager:
     def __init__(self):
@@ -19,7 +37,10 @@ class RAGManager:
             self.collection = self.chroma_client.create_collection("docmind_documents")
             
         self.groq_key = Config.GROQ_API_KEY
-        self.groq_client = Groq(api_key=self.groq_key) if self.groq_key else None
+        self.groq_client = Groq(
+            api_key=self.groq_key,
+            http_client=DefaultHttpxClient(verify=truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)),
+        ) if self.groq_key else None
         
         self.documents = {}
         self.chat_histories = {}
@@ -42,6 +63,11 @@ class RAGManager:
                             "chunks": 1,
                             "uploaded": datetime.now().strftime("%H:%M")
                         }
+                        # Resolve only files inside the configured upload directory.
+                        matches = [entry.path for entry in os.scandir(Config.UPLOAD_FOLDER)
+                                   if entry.is_file() and entry.name.startswith(f"{doc_id}_")]
+                        if len(matches) == 1:
+                            self.documents[doc_id]["filepath"] = matches[0]
                         self.chat_histories[doc_id] = []
                     elif doc_id in self.documents:
                         self.documents[doc_id]["chunks"] += 1
@@ -79,29 +105,28 @@ class RAGManager:
         ]
 
     def delete_document(self, doc_id):
-        try:
-            records = self.collection.get(where={"doc_id": doc_id})
-            if records and records.get("ids"):
-                self.collection.delete(ids=records["ids"])
-        except Exception as e:
-            print(f"[RAGManager] Chroma delete error: {e}")
+        records = self.collection.get(where={"doc_id": doc_id})
+        if records and records.get("ids"):
+            self.collection.delete(ids=records["ids"])
 
         if doc_id in self.documents:
             filepath = self.documents[doc_id].get("filepath")
             if filepath and os.path.exists(filepath):
-                try:
-                    os.remove(filepath)
-                except OSError:
-                    pass
+                os.remove(filepath)
             del self.documents[doc_id]
 
         if doc_id in self.chat_histories:
             del self.chat_histories[doc_id]
+        # Global answers may refer to the deleted document.
+        self.global_history = []
 
     def retrieve(self, question, doc_id=None, top_k=3):
+        count = self.documents.get(doc_id, {}).get("chunks", 0) if doc_id else self.collection.count()
+        if not count:
+            return []
         args = {
             "query_embeddings": self.embedder.encode([question]).tolist(),
-            "n_results": top_k,
+            "n_results": min(top_k, count),
             "include": ["documents", "metadatas", "distances"]
         }
         if doc_id:
@@ -129,7 +154,7 @@ class RAGManager:
 
     def answer_question(self, question, doc_id=None, top_k=4):
         if not self.groq_client:
-            return "Groq API key not configured. Please set GROQ_API_KEY in backend/.env.", []
+            raise ServiceUnavailable("Set GROQ_API_KEY in backend/.env to enable AI features.")
 
         history = self.chat_histories.get(doc_id, []) if doc_id else self.global_history
         scope = f"'{self.documents[doc_id]['name']}'" if doc_id and doc_id in self.documents else "all documents"
@@ -176,11 +201,11 @@ class RAGManager:
             ]
             return response_text, sources
         except Exception as e:
-            return f"LLM Generation Error: {str(e)}", []
+            raise groq_failure(e) from e
 
     def compare_documents(self, question, doc_id_1, doc_id_2):
         if not self.groq_client:
-            return "Groq API key missing."
+            raise ServiceUnavailable("Set GROQ_API_KEY in backend/.env to enable AI features.")
 
         name1 = self.documents.get(doc_id_1, {}).get("name", "Doc 1")
         name2 = self.documents.get(doc_id_2, {}).get("name", "Doc 2")
@@ -214,11 +239,11 @@ Format your comparison with clear headers:
             )
             return completion.choices[0].message.content
         except Exception as e:
-            return f"Comparison Error: {str(e)}"
+            raise groq_failure(e) from e
 
     def generate_summary(self, doc_id):
         if not self.groq_client:
-            return "Groq API Key required for summary generation."
+            raise ServiceUnavailable("Set GROQ_API_KEY in backend/.env to enable AI features.")
 
         if doc_id not in self.documents:
             return "Document not found."
@@ -247,7 +272,7 @@ Format as markdown with:
             )
             return completion.choices[0].message.content
         except Exception as e:
-            return f"Summary Error: {str(e)}"
+            raise groq_failure(e) from e
 
     def reset_history(self, doc_id=None):
         if doc_id:

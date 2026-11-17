@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import ChatArea from './components/ChatArea';
 import CompareView from './components/CompareView';
@@ -17,7 +17,11 @@ import './App.css';
 export default function App() {
   const [documents, setDocuments] = useState([]);
   const [selectedDoc, setSelectedDoc] = useState(null);
-  const [messages, setMessages] = useState([]);
+  const [messagesByScope, setMessagesByScope] = useState({});
+  const messages = messagesByScope[selectedDoc || 'all'] || [];
+  const appendMessage = (scope, message) => setMessagesByScope(prev => ({
+    ...prev, [scope]: [...(prev[scope] || []), message]
+  }));
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [activeTab, setActiveTab] = useState('chat'); // 'chat' | 'compare'
@@ -26,6 +30,8 @@ export default function App() {
   const [summaryModalDoc, setSummaryModalDoc] = useState(null);
   const [summaryText, setSummaryText] = useState('');
   const [summaryLoading, setSummaryLoading] = useState(false);
+  const summaryRequest = useRef(0);
+  const [connectionError, setConnectionError] = useState('');
 
   useEffect(() => {
     fetchDocuments();
@@ -36,9 +42,11 @@ export default function App() {
       const res = await getDocuments();
       if (res.data && res.data.documents) {
         setDocuments(res.data.documents);
+        setConnectionError('');
       }
     } catch (err) {
       console.error('Failed to fetch documents:', err);
+      setConnectionError('Could not load documents. Check that the backend is running.');
     }
   };
 
@@ -63,6 +71,12 @@ export default function App() {
 
     try {
       await deleteDocument(docId);
+      setMessagesByScope(prev => {
+        const next = { ...prev };
+        delete next[docId];
+        delete next.all;
+        return next;
+      });
       if (selectedDoc === docId) {
         setSelectedDoc(null);
       }
@@ -73,21 +87,22 @@ export default function App() {
   };
 
   const handleSendMessage = async (question, docId, topK) => {
-    setMessages(prev => [...prev, { role: 'user', text: question }]);
+    const scope = docId || 'all';
+    appendMessage(scope, { role: 'user', text: question });
     setLoading(true);
 
     try {
       const res = await sendChatMessage(question, docId, topK);
-      setMessages(prev => [...prev, {
+      appendMessage(scope, {
         role: 'assistant',
         text: res.data.answer,
         sources: res.data.sources
-      }]);
+      });
     } catch (err) {
-      setMessages(prev => [...prev, {
+      appendMessage(scope, {
         role: 'assistant',
         text: `Error processing query: ${err.response?.data?.error || err.message}`
-      }]);
+      });
     } finally {
       setLoading(false);
     }
@@ -96,7 +111,7 @@ export default function App() {
   const handleResetChat = async (docId) => {
     try {
       await resetChatHistory(docId);
-      setMessages([]);
+      setMessagesByScope(prev => ({ ...prev, [docId || 'all']: [] }));
     } catch (err) {
       console.error('Reset error:', err);
     }
@@ -120,16 +135,20 @@ export default function App() {
     if (!targetDoc) return;
 
     setSummaryModalDoc(targetDoc);
+    const requestId = ++summaryRequest.current;
     setSummaryLoading(true);
     setSummaryText('');
 
     try {
       const res = await getDocumentSummary(docId);
+      if (requestId !== summaryRequest.current) return;
       setSummaryText(res.data.summary);
     } catch (err) {
-      setSummaryText("Error fetching summary: " + err.message);
+      if (requestId === summaryRequest.current) {
+        setSummaryText("Error fetching summary: " + (err.response?.data?.error || err.message));
+      }
     } finally {
-      setSummaryLoading(false);
+      if (requestId === summaryRequest.current) setSummaryLoading(false);
     }
   };
 
@@ -148,6 +167,7 @@ export default function App() {
       />
 
       <main className="main-content">
+        {connectionError && <div role="alert">{connectionError} <button onClick={fetchDocuments}>Retry</button></div>}
         {activeTab === 'chat' && (
           <ChatArea 
             selectedDoc={selectedDoc}
@@ -173,7 +193,7 @@ export default function App() {
           doc={summaryModalDoc}
           summary={summaryText}
           loading={summaryLoading}
-          onClose={() => setSummaryModalDoc(null)}
+          onClose={() => { summaryRequest.current += 1; setSummaryModalDoc(null); }}
         />
       )}
     </div>
